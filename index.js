@@ -36,7 +36,7 @@ async function senderr(message) {
     console.log(`[${custom_timestamp()}] ERROR -->`);
 }
 
-async function interval() {
+async function fetcher() {
     while (true) {
         try {
             await sendlog('Sending HTTP HEAD request to ZSE server...');
@@ -123,17 +123,17 @@ async function interval() {
     }
 }
 
-async function interval_daemon() {
+async function fetcher_daemon() {
     try {
-        await sendlog('[INTERVAL DAEMON]: Running');
-        await interval();
+        await sendlog('[FETCHER DAEMON]: Running');
+        await fetcher();
     } catch (error) {
-        await senderr(`[INTERVAL DAEMON]: Interval crashed, restarting: ${error.message}`);
-        setTimeout(interval_daemon, 5000);
+        await senderr(`[FETCHER DAEMON]: Fetcher crashed, restarting: ${error.message}`);
+        setTimeout(fetcher_daemon, 5000);
     }
 }
 
-interval_daemon();
+fetcher_daemon();
 
 server.use((req, res, next) => {
     console.log('Received a', req.method, 'request for', req.url);
