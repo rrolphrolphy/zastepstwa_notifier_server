@@ -39,7 +39,7 @@ async function senderr(message) {
 async function fetcher() {
     while (true) {
         try {
-            await sendlog('Sending HTTP HEAD request to ZSE server...');
+            await sendlog('[FETCHER] Sending HTTP HEAD request to ZSE server...');
             
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -52,37 +52,37 @@ async function fetcher() {
             clearTimeout(timeoutId);
             
             if (response.status === 200) {
-                await sendlog('Server healthy, returned 200 OK');
+                await sendlog('[FETCHER] Server healthy, returned 200 OK');
                 if (response.headers.has('ETag')) {
                     latest_etag = response.headers.get('ETag');
-                    await sendlog(`Gathered ETag: ${latest_etag}`);
+                    await sendlog(`[FETCHER] Gathered ETag: ${latest_etag}`);
                     fs.readdir(etagpath, (err, files) => {
                         if (err) {
-                            senderr(`An error occured while scanning ETag\'s directory: ${err}`);
+                            senderr(`[FETCHER] An error occured while scanning ETag\'s directory: ${err}`);
                         } else {
                             if (files.length === 0) {
-                                sendlog('ETag\'s directory is empty, saving the current one in a new file...');
+                                sendlog('[FETCHER] ETag\'s directory is empty, saving the current one in a new file...');
                                 fs.writeFile('./etag/etag', latest_etag, (err) => {
                                     if (err) {
-                                        senderr(`An error occured while saving ETag file: ${err}`);
+                                        senderr(`[FETCHER] An error occured while saving ETag file: ${err}`);
                                         is_error = true;
                                     } else {
-                                        sendlog('ETag file saved successfully');
+                                        sendlog('[FETCHER] ETag file saved successfully');
                                         is_error = false;
                                     }
                                 });
                             } else {
-                                sendlog('Found a previous ETag');
+                                sendlog('[FETCHER] Found a previous ETag');
                                 fs.readFile('./etag/etag', 'utf-8', (err, data) => {
                                     if (err) {
-                                        senderr(`An error occured while reading ETag file: ${err}`);
+                                        senderr(`[FETCHER] An error occured while reading ETag file: ${err}`);
                                         is_error = true;
                                     } else {
                                         if (!data.includes(latest_etag)) {
-                                            sendlog('ETag file is going to be updated');
+                                            sendlog('[FETCHER] ETag file is going to be updated');
                                             to_update = true;
                                         } else {
-                                            sendlog('Current ETag equals the previous check\'s one');
+                                            sendlog('[FETCHER] Current ETag equals the previous check\'s one');
                                             is_error = false;
                                         }
                                     }
@@ -92,9 +92,9 @@ async function fetcher() {
                                     to_update = false;
                                     fs.writeFile('./etag/etag', latest_etag, (err) => {
                                         if (err) {
-                                            senderr(`An error occured while updating ETag file: ${err}`);
+                                            senderr(`[FETCHER] An error occured while updating ETag file: ${err}`);
                                         } else {
-                                            sendlog('ETag file has been updated successfully');
+                                            sendlog('[FETCHER] ETag file has been updated successfully');
                                         }
                                     });
                                 }
@@ -102,21 +102,21 @@ async function fetcher() {
                         }
                     });
                 } else {
-                    await senderr(`Couldn\'t receive ETag header`)
+                    await senderr(`[FETCHER] Couldn\'t receive ETag header`)
                 }
             } else {
-                await senderr(`Server returned status: ${response.status}`);
+                await senderr(`[FETCHER] Server returned status: ${response.status}`);
             }
             
         } catch (error) {
             if (error.name === 'AbortError') {
-                await senderr(`Request timeout, server not responding: ${error.message}`);
+                await senderr(`[FETCHER] Request timeout, server not responding: ${error.message}`);
             } else if (error.code === 'ECONNREFUSED') {
-                await senderr(`Connection refused, server down: ${error.message}`);
+                await senderr(`[FETCHER] Connection refused, server down: ${error.message}`);
             } else if (error.response) {
-                await senderr(`Server error: ${error.response.status}, Full error message: ${error.message}`);
+                await senderr(`[FETCHER] Server error: ${error.response.status}, Full error message: ${error.message}`);
             } else {
-                await senderr(`Network error: ${error.message}`);
+                await senderr(`[FETCHER] Network error: ${error.message}`);
             }
         }
         await delay(30000);
@@ -136,7 +136,7 @@ async function fetcher_daemon() {
 fetcher_daemon();
 
 server.use((req, res, next) => {
-    console.log('Received a', req.method, 'request for', req.url);
+    sendlog(`[REQUEST] Received a ${req.method} request for ${req.url}`);
     next();
 });
 
