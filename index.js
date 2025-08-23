@@ -6,7 +6,8 @@ const etagpath = './etag/';
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-var latest_etag, is_error = false, to_update = false;
+var latest_etag, is_error = false;
+const check_timeout = 30000;
 
 function custom_timestamp() {
     const now = new Date();
@@ -53,8 +54,8 @@ async function fetcher() {
             
             if (response.status === 200) {
                 await sendlog('[FETCHER] Server healthy, returned 200 OK');
-                if (response.headers.has('ETag')) {
-                    latest_etag = response.headers.get('ETag');
+                if (response.headers['etag']) {
+                    latest_etag = response.headers['etag'];
                     await sendlog(`[FETCHER] Gathered ETag: ${latest_etag}`);
                     fs.readdir(etagpath, (err, files) => {
                         if (err) {
@@ -80,24 +81,19 @@ async function fetcher() {
                                     } else {
                                         if (!data.includes(latest_etag)) {
                                             sendlog('[FETCHER] ETag file is going to be updated');
-                                            to_update = true;
+                                            fs.writeFile('./etag/etag', latest_etag, (err) => {
+                                                if (err) {
+                                                    senderr(`[FETCHER] An error occured while updating ETag file: ${err}`);
+                                                } else {
+                                                    sendlog('[FETCHER] ETag file has been updated successfully');
+                                                }
+                                            });
                                         } else {
                                             sendlog('[FETCHER] Current ETag equals the previous check\'s one');
                                             is_error = false;
                                         }
                                     }
                                 });
-
-                                if (to_update) {
-                                    to_update = false;
-                                    fs.writeFile('./etag/etag', latest_etag, (err) => {
-                                        if (err) {
-                                            senderr(`[FETCHER] An error occured while updating ETag file: ${err}`);
-                                        } else {
-                                            sendlog('[FETCHER] ETag file has been updated successfully');
-                                        }
-                                    });
-                                }
                             }
                         }
                     });
@@ -119,7 +115,7 @@ async function fetcher() {
                 await senderr(`[FETCHER] Network error: ${error.message}`);
             }
         }
-        await delay(30000);
+        await delay(check_timeout);
     }
 }
 
