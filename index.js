@@ -2,12 +2,16 @@ const express = require('express');
 const server = express();
 const axios = require('axios');
 const fs = require('fs');
-const etagpath = './etag/';
+const path = require('path');
+const etagpath = path.join(__dirname, 'etag');
+const etagfile = path.join(etagpath, 'etag');
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 var latest_etag, is_error = false;
 const check_timeout = 30000;
+const axios_timeout = 10000;
+const axios_url = 'http://127.0.0.1:8090';
 
 function custom_timestamp() {
     const now = new Date();
@@ -42,21 +46,17 @@ async function fetcher() {
         try {
             await sendlog('[FETCHER] Sending HTTP HEAD request to ZSE server...');
             
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000);
-            
-            const response = await axios.head('http://127.0.0.1:8090', {
-                signal: controller.signal,
-                timeout: 10000
+            const response = await axios.head(axios_url, {
+                timeout: axios_timeout
             });
-            
-            clearTimeout(timeoutId);
             
             if (response.status === 200) {
                 await sendlog('[FETCHER] Server healthy, returned 200 OK');
+
                 if (response.headers['etag']) {
                     latest_etag = response.headers['etag'];
                     await sendlog(`[FETCHER] Gathered ETag: ${latest_etag}`);
+                    
                     fs.readdir(etagpath, (err, files) => {
                         if (err) {
                             senderr(`[FETCHER] An error occured while scanning ETag\'s directory: ${err}`);
