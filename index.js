@@ -8,8 +8,8 @@ const etagfile = path.join(etagpath, 'etag');
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-var latest_etag
-var internal_error = false, external_error = false;
+var latest_etag, fetcher_running;
+var internal_error = false, external_error = false, another_error = false;
 const check_timeout = 30000;
 const fetcher_daemon_timeout = 30000;
 const axios_timeout = 10000;
@@ -45,6 +45,10 @@ async function senderr(message) {
 
 async function fetcher() {
     while (true) {
+        fetcher_running = true;
+        internal_error = false;
+        external_error = false;
+        another_error = false;
         try {
             await sendlog('[FETCHER] Sending HTTP HEAD request to ZSE server...');
 
@@ -53,9 +57,11 @@ async function fetcher() {
             });
 
             if (response.status === 200) {
+                external_error = false;
                 await sendlog('[FETCHER] Server healthy, returned 200 OK');
 
                 if (response.headers['etag']) {
+                    another_error = false;
                     latest_etag = response.headers['etag'];
                     await sendlog(`[FETCHER] Gathered ETag: ${latest_etag}`);
 
@@ -98,25 +104,32 @@ async function fetcher() {
                     }
 
                 } else {
+                    another_error = true;
                     await senderr(`[FETCHER] Couldn’t receive ETag header`);
                 }
 
-            }else {
+            } else {
+                external_error = true;
                 await senderr(`[FETCHER] Server returned status: ${response.status}`);
             }
 
         } catch (error) {
             if (error.code === 'ECONNABORTED') {
+                another_error = true;
                 await senderr(`[FETCHER] Request timeout, server not responding: ${error.message}`);
             } else if (error.code === 'ECONNREFUSED') {
+                external_error = true;
                 await senderr(`[FETCHER] Connection refused, server down: ${error.message}`);
             } else if (error.response) {
+                another_error = true;
                 await senderr(`[FETCHER] Server error: ${error.response.status}, Full error message: ${error.message}`);
             } else {
+                another_error = true;
                 await senderr(`[FETCHER] Network error: ${error.message}`);
             }
         }
 
+        fetcher_running = false;
         await delay(check_timeout);
     }
 }
@@ -126,6 +139,8 @@ async function fetcher_daemon() {
         await sendlog('[FETCHER DAEMON]: Running');
         await fetcher();
     } catch (error) {
+        internal_error = true;
+        fetcher_running = false;
         await senderr(`[FETCHER DAEMON]: Fetcher crashed due to: ${error.message}`);
         await senderr(`[FETCHER DAEMON]: Restarting fetcher...`)
         setTimeout(fetcher_daemon, fetcher_daemon_timeout);
