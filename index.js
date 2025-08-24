@@ -45,67 +45,51 @@ async function fetcher() {
     while (true) {
         try {
             await sendlog('[FETCHER] Sending HTTP HEAD request to ZSE server...');
-            
-            const response = await axios.head(axios_url, {
-                timeout: axios_timeout
-            });
-            
+
+            const response = await axios.head(axios_url, { timeout: axios_timeout });
+
             if (response.status === 200) {
                 await sendlog('[FETCHER] Server healthy, returned 200 OK');
 
                 if (response.headers['etag']) {
                     latest_etag = response.headers['etag'];
                     await sendlog(`[FETCHER] Gathered ETag: ${latest_etag}`);
-                    
-                    fs.readdir(etagpath, (err, files) => {
-                        if (err) {
-                            senderr(`[FETCHER] An error occured while scanning ETag\'s directory: ${err}`);
+
+                    try {
+                        await fs.mkdir(etagpath, { recursive: true });
+                    } catch (err) {
+                        await senderr(`[FETCHER] Could not create directory ${etagpath}: ${err}`);
+                    }
+
+                    try {
+                        const old_etag = await fs.readFile(etagfile, 'utf-8');
+
+                        if (old_etag !== latest_etag) {
+                            await sendlog('[FETCHER] ETag changed, updating file...');
+                            await fs.writeFile(etagfile, latest_etag);
+                            await sendlog('[FETCHER] ETag file updated successfully');
                         } else {
-                            if (files.length === 0) {
-                                sendlog('[FETCHER] ETag\'s directory is empty, saving the current one in a new file...');
-                                fs.writeFile('./etag/etag', latest_etag, (err) => {
-                                    if (err) {
-                                        senderr(`[FETCHER] An error occured while saving ETag file: ${err}`);
-                                        is_error = true;
-                                    } else {
-                                        sendlog('[FETCHER] ETag file saved successfully');
-                                        is_error = false;
-                                    }
-                                });
-                            } else {
-                                sendlog('[FETCHER] Found a previous ETag');
-                                fs.readFile('./etag/etag', 'utf-8', (err, data) => {
-                                    if (err) {
-                                        senderr(`[FETCHER] An error occured while reading ETag file: ${err}`);
-                                        is_error = true;
-                                    } else {
-                                        if (!data.includes(latest_etag)) {
-                                            sendlog('[FETCHER] ETag file is going to be updated');
-                                            fs.writeFile('./etag/etag', latest_etag, (err) => {
-                                                if (err) {
-                                                    senderr(`[FETCHER] An error occured while updating ETag file: ${err}`);
-                                                } else {
-                                                    sendlog('[FETCHER] ETag file has been updated successfully');
-                                                }
-                                            });
-                                        } else {
-                                            sendlog('[FETCHER] Current ETag equals the previous check\'s one');
-                                            is_error = false;
-                                        }
-                                    }
-                                });
-                            }
+                            await sendlog('[FETCHER] Current ETag equals the previous one');
                         }
-                    });
+                    } catch (err) {
+                        if (err.code === 'ENOENT') {
+                            await sendlog('[FETCHER] No ETag file found, creating new one...');
+                            await fs.writeFile(etagfile, latest_etag);
+                            await sendlog('[FETCHER] ETag file created successfully');
+                        } else {
+                            await senderr(`[FETCHER] File system error: ${err}`);
+                            is_error = true;
+                        }
+                    }
                 } else {
-                    await senderr(`[FETCHER] Couldn\'t receive ETag header`)
+                    await senderr(`[FETCHER] Couldn’t receive ETag header`);
                 }
             } else {
                 await senderr(`[FETCHER] Server returned status: ${response.status}`);
             }
-            
+
         } catch (error) {
-            if (error.name === 'AbortError') {
+            if (error.code === 'ECONNABORTED') {
                 await senderr(`[FETCHER] Request timeout, server not responding: ${error.message}`);
             } else if (error.code === 'ECONNREFUSED') {
                 await senderr(`[FETCHER] Connection refused, server down: ${error.message}`);
@@ -115,6 +99,7 @@ async function fetcher() {
                 await senderr(`[FETCHER] Network error: ${error.message}`);
             }
         }
+
         await delay(check_timeout);
     }
 }
