@@ -8,8 +8,10 @@ const etagfile = path.join(etagpath, 'etag');
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-var latest_etag, is_error = false;
+var latest_etag
+var internal_error = false, external_error = false;
 const check_timeout = 30000;
+const fetcher_daemon_timeout = 30000;
 const axios_timeout = 10000;
 const axios_url = 'http://127.0.0.1:8090';
 
@@ -46,7 +48,9 @@ async function fetcher() {
         try {
             await sendlog('[FETCHER] Sending HTTP HEAD request to ZSE server...');
 
-            const response = await axios.head(axios_url, { timeout: axios_timeout });
+            const response = await axios.head(axios_url,{
+                timeout: axios_timeout
+            });
 
             if (response.status === 200) {
                 await sendlog('[FETCHER] Server healthy, returned 200 OK');
@@ -56,9 +60,12 @@ async function fetcher() {
                     await sendlog(`[FETCHER] Gathered ETag: ${latest_etag}`);
 
                     try {
-                        await fs.mkdir(etagpath, { recursive: true });
+                        await fs.mkdir(etagpath, {
+                            recursive: true
+                        });
+
                     } catch (err) {
-                        await senderr(`[FETCHER] Could not create directory ${etagpath}: ${err}`);
+                        throw new Error(`Could not create directory ${etagpath}: ${err}`);
                     }
 
                     try {
@@ -68,23 +75,33 @@ async function fetcher() {
                             await sendlog('[FETCHER] ETag changed, updating file...');
                             await fs.writeFile(etagfile, latest_etag);
                             await sendlog('[FETCHER] ETag file updated successfully');
+
                         } else {
                             await sendlog('[FETCHER] Current ETag equals the previous one');
                         }
+
                     } catch (err) {
                         if (err.code === 'ENOENT') {
                             await sendlog('[FETCHER] No ETag file found, creating new one...');
-                            await fs.writeFile(etagfile, latest_etag);
-                            await sendlog('[FETCHER] ETag file created successfully');
+
+                            try {
+                                await fs.writeFile(etagfile, latest_etag);
+                                await sendlog('[FETCHER] ETag file created successfully');
+
+                            } catch (err) {
+                                throw new Error(`Could not create ETag file (${etagfile}): ${err}`);
+                            }
+
                         } else {
-                            await senderr(`[FETCHER] File system error: ${err}`);
-                            is_error = true;
+                            throw new Error(`File system error: ${err}`);
                         }
                     }
+
                 } else {
                     await senderr(`[FETCHER] Couldn’t receive ETag header`);
                 }
-            } else {
+
+            }else {
                 await senderr(`[FETCHER] Server returned status: ${response.status}`);
             }
 
@@ -109,8 +126,9 @@ async function fetcher_daemon() {
         await sendlog('[FETCHER DAEMON]: Running');
         await fetcher();
     } catch (error) {
-        await senderr(`[FETCHER DAEMON]: Fetcher crashed, restarting: ${error.message}`);
-        setTimeout(fetcher_daemon, 5000);
+        await senderr(`[FETCHER DAEMON]: Fetcher crashed due to: ${error.message}`);
+        await senderr(`[FETCHER DAEMON]: Restarting fetcher...`)
+        setTimeout(fetcher_daemon, fetcher_daemon_timeout);
     }
 }
 
