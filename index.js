@@ -1,7 +1,7 @@
 const express = require('express');
 const server = express();
 const axios = require('axios');
-const fs = require('fs');
+const fs = require('fs').promises;
 const path = require('path');
 const etagpath = path.join(__dirname, 'etag');
 const etagfile = path.join(etagpath, 'etag');
@@ -49,10 +49,11 @@ async function fetcher() {
         internal_error = false;
         external_error = false;
         another_error = false;
+        
         try {
             await sendlog('[FETCHER] Sending HTTP HEAD request to ZSE server...');
 
-            const response = await axios.head(axios_url,{
+            const response = await axios.head(axios_url, {
                 timeout: axios_timeout
             });
 
@@ -105,7 +106,7 @@ async function fetcher() {
 
                 } else {
                     another_error = true;
-                    await senderr(`[FETCHER] Couldn’t receive ETag header`);
+                    await senderr(`[FETCHER] Couldn't receive ETag header`);
                 }
 
             } else {
@@ -117,15 +118,24 @@ async function fetcher() {
             if (error.code === 'ECONNABORTED') {
                 another_error = true;
                 await senderr(`[FETCHER] Request timeout, server not responding: ${error.message}`);
+
             } else if (error.code === 'ECONNREFUSED') {
                 external_error = true;
                 await senderr(`[FETCHER] Connection refused, server down: ${error.message}`);
+
             } else if (error.response) {
                 another_error = true;
-                await senderr(`[FETCHER] Server error: ${error.response.status}, Full error message: ${error.message}`);
+                await senderr(`[FETCHER] Unknown error: ${error.response.status}, Full error message: ${error.message}`);
+
+            } else if (error.message && error.message.includes('Could not create')) {
+                throw error;
+
+            } else if (error.message && error.message.includes('File system error')) {
+                throw error;
+
             } else {
-                another_error = true;
-                await senderr(`[FETCHER] Network error: ${error.message}`);
+                throw error;
+                
             }
         }
 
@@ -150,7 +160,7 @@ async function fetcher_daemon() {
 fetcher_daemon();
 
 server.use((req, res, next) => {
-    sendlog(`[REQUEST] Received a ${req.method} request for ${req.url}`);
+    sendlog(`[REQUEST] Received a ${req.method} request for ${req.url} from ${req.ip} ({${req.connection.remoteAddress})`);
     next();
 });
 
