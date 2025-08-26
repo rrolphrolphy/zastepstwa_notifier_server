@@ -9,6 +9,7 @@ const etagfile = path.join(etagpath, 'etag');
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 var latest_etag, fetcher_running;
+var clients = [];
 var internal_error = false, external_error = false, another_error = false;
 const check_timeout = 30000;
 const fetcher_daemon_timeout = 30000;
@@ -43,6 +44,20 @@ async function senderr(message) {
     console.log(`[${custom_timestamp()}] ERROR -->`);
 }
 
+async function save_etag(etag) {
+    const payload = {etag, timestamp: Date.now()};
+    await fs.writeFile(etagfile, JSON.stringify(payload));
+}
+
+async function load_etag() {
+    const content = await fs.readFile(etagfile, 'utf-8');
+    try {
+        return JSON.parse(content).etag;
+    } catch {
+        return content;
+    }
+}
+
 async function fetcher() {
     while (true) {
         fetcher_running = true;
@@ -63,7 +78,7 @@ async function fetcher() {
 
                 if (response.headers['etag']) {
                     another_error = false;
-                    latest_etag = response.headers['etag'];
+                    latest_etag = response.headers['etag'].replace(/^"|"$/g, '');
                     await sendlog(`[FETCHER] Gathered ETag: ${latest_etag}`);
 
                     try {
@@ -76,11 +91,11 @@ async function fetcher() {
                     }
 
                     try {
-                        const old_etag = await fs.readFile(etagfile, 'utf-8');
+                        const old_etag = await load_etag();
 
                         if (old_etag !== latest_etag) {
                             await sendlog('[FETCHER] ETag changed, updating file...');
-                            await fs.writeFile(etagfile, latest_etag);
+                            await save_etag(latest_etag);
                             await sendlog('[FETCHER] ETag file updated successfully');
 
                         } else {
@@ -92,7 +107,7 @@ async function fetcher() {
                             await sendlog('[FETCHER] No ETag file found, creating new one...');
 
                             try {
-                                await fs.writeFile(etagfile, latest_etag);
+                                await save_etag(latest_etag);
                                 await sendlog('[FETCHER] ETag file created successfully');
 
                             } catch (err) {
