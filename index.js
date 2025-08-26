@@ -8,7 +8,7 @@ const etagfile = path.join(etagpath, 'etag');
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-var latest_etag, fetcher_running;
+var latest_etag, fetcher_running, loaded_timestamp;
 var clients = [];
 var internal_error = false, external_error = false, another_error = false;
 const check_timeout = 30000;
@@ -44,6 +44,17 @@ async function senderr(message) {
     console.log(`[${custom_timestamp()}] ERROR -->`);
 }
 
+function notify(etag) {
+    sendlog(`[NOTIFIER]: Notifying ${clients.length} clients about ETag change`);
+    clients.forEach(client => {
+        client.res.json({
+            e: etag,
+            t: loaded_timestamp
+        });
+    });
+    clients = [];
+}
+
 async function save_etag(etag) {
     const payload = {etag, timestamp: Date.now()};
     await fs.writeFile(etagfile, JSON.stringify(payload));
@@ -52,7 +63,10 @@ async function save_etag(etag) {
 async function load_etag() {
     const content = await fs.readFile(etagfile, 'utf-8');
     try {
-        return JSON.parse(content).etag;
+        const response = [];
+        response.push(JSON.parse(content).etag);
+        response.push(JSON.parse(content).timestamp);
+        return response;
     } catch {
         return content;
     }
@@ -93,7 +107,7 @@ async function fetcher() {
                     try {
                         const old_etag = await load_etag();
 
-                        if (old_etag !== latest_etag) {
+                        if (old_etag[0] !== latest_etag) {
                             await sendlog('[FETCHER] ETag changed, updating file...');
                             await save_etag(latest_etag);
                             await sendlog('[FETCHER] ETag file updated successfully');
@@ -101,6 +115,8 @@ async function fetcher() {
                         } else {
                             await sendlog('[FETCHER] Current ETag equals the previous one');
                         }
+
+                        loaded_timestamp = old_etag[1];
 
                     } catch (err) {
                         if (err.code === 'ENOENT') {
