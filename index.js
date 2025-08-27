@@ -8,7 +8,7 @@ const etagfile = path.join(etagpath, 'etag');
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-var latest_etag, fetcher_running, loaded_timestamp;
+var latest_etag, fetcher_running = false, loaded_timestamp = 0;
 var clients = [];
 var internal_error = false, external_error = false, another_error = false;
 const check_timeout = 30000;
@@ -63,10 +63,8 @@ async function save_etag(etag) {
 async function load_etag() {
     const content = await fs.readFile(etagfile, 'utf-8');
     try {
-        const response = [];
-        response.push(JSON.parse(content).etag);
-        response.push(JSON.parse(content).timestamp);
-        return response;
+        const parsed = JSON.parse(content);
+        return [parsed.etag, parsed.timestamp];
     } catch {
         return content;
     }
@@ -82,9 +80,7 @@ async function fetcher() {
         try {
             await sendlog('[FETCHER] Sending HTTP HEAD request to ZSE server...');
 
-            const response = await axios.head(axios_url, {
-                timeout: axios_timeout
-            });
+            const response = await axios.head(axios_url, {timeout: axios_timeout});
 
             if (response.status === 200) {
                 external_error = false;
@@ -111,12 +107,11 @@ async function fetcher() {
                             await sendlog('[FETCHER] ETag changed, updating file...');
                             await save_etag(latest_etag);
                             await sendlog('[FETCHER] ETag file updated successfully');
+                            loaded_timestamp = old_etag[1];
 
                         } else {
                             await sendlog('[FETCHER] Current ETag equals the previous one');
                         }
-
-                        loaded_timestamp = old_etag[1];
 
                     } catch (err) {
                         if (err.code === 'ENOENT') {
@@ -166,7 +161,6 @@ async function fetcher() {
 
             } else {
                 throw error;
-                
             }
         }
 
@@ -195,8 +189,40 @@ server.use((req, res, next) => {
     next();
 });
 
-server.get('/get', async (req, res) => {
+server.get('/query', async (req, res) => {
     res.send('Hello world!');
+
+    while (fetcher_running) {
+        await delay(100);
+    }
+
+    // if known error
+    // r:
+    // 0 - internal
+    // 1 - external
+    // 2 - another
+
+    if (internal_error) {res.status(500).json({r: 0});}
+    if (external_error) {res.status(500).json({r: 1});}
+    if (another_error) {res.status(500).json({r: 2});}
+
+    // if no etag given or not up to date
+    if (!req.query.e || req.query.e == 'null' || req.query.e == 'undefined' || req.query.e != latest_etag) {
+        res.json({
+            e: latest_etag,
+            t: loaded_timestamp
+        });
+    }
+
+    // go long polling
+
+    const client = {
+        res,
+        timestamp: Date.now(),
+        ip: req.ip
+    };
+    clients.push(client);
+
 });
 
 server.use(async (req, res) => {
