@@ -1,7 +1,7 @@
 const WS_CONNECTION_LIMIT = 10;
 const WS_MESSAGE_LIMIT = 60;
 const HTTP_REQUEST_LIMIT = 30;
-const MAX_PAYLOAD_SIZE = 1024;
+const MAX_PAYLOAD_SIZE = 64;
 
 const ws_connections = new Map();
 const ws_messages = new Map();
