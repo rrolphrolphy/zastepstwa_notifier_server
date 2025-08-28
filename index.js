@@ -1,3 +1,12 @@
+const WS_CONNECTION_LIMIT = 10;
+const WS_MESSAGE_LIMIT = 60;
+const HTTP_REQUEST_LIMIT = 30;
+const MAX_PAYLOAD_SIZE = 1024;
+
+const ws_connections = new Map();
+const ws_messages = new Map();
+const http_requests = new Map();
+
 const express = require('express');
 const http = require('http');
 const axios = require('axios');
@@ -186,9 +195,37 @@ async function fetcher_daemon() {
 }
 
 httpserver.use((req, res, next) => {
-    sendlog(`[HTTP REQUEST] ${req.method} ${req.url} from ${req.ip} (${req.connection.remoteAddress})`);
+    const ip = req.ip || req.connection.remoteAddress;
+    const now = Date.now();
+    let requests = http_requests.get(ip);
+    if (!requests || now > requests.resetTime) {
+        requests = { count: 0, resetTime: now + 60000 };
+    }
+    if (requests.count >= HTTP_REQUEST_LIMIT) {
+        sendwarn(`[HTTP REQUEST]: ${ip} is connecting to many times!`)
+        res.status(429).send('You have been rate limited');
+    }
+    requests.count++;
+    http_requests.set(ip, requests);
+    sendlog(`[HTTP REQUEST]: ${req.method} ${req.url} from ${ip}`);
     next();
 });
+
+setInterval(() => {
+    const now = Date.now();
+    
+    for (const [ip, data] of http_requests) {
+        if (now > data.resetTime) {
+            http_requests.delete(ip);
+        }
+    }
+
+    for (const [ip, data] of ws_messages) {
+        if (now > data.resetTime) {
+            ws_messages.delete(ip);
+        }
+    }
+}, 60000);
 
 httpserver.get('/', (req, res) => {
     res.send('Server running')
@@ -211,7 +248,20 @@ setInterval(() => {
 }, 30000);
 
 wss.on('connection', async (ws, req) => {
-    sendlog(`[WS]: New client connected from ${req.socket.remoteAddress}`);
+    const ip = req.socket.remoteAddress;
+    const connections = ws_connections.get(ip) || 0;
+    if (connections >= WS_CONNECTION_LIMIT) {
+        ws.close(1008, 'Too many connections from your IP');
+        await sendwarn(`[WS RATE LIMIT]: ${ip} is connecting too many times!`);
+        return;
+    }
+    ws_connections.set(ip, connections + 1);
+    const message_limit = {
+        count: 0,
+        resetTime: Date.now() + 60000
+    };
+    ws_messages.set(ip, message_limit);
+    sendlog(`[WS]: New client connected from ${ip}`);
 
     while (fetcher_running) {
         await delay(100);
@@ -227,6 +277,25 @@ wss.on('connection', async (ws, req) => {
     // if client sends 0 means respond me with an etag
 
     ws.on('message', async function message(data) {
+
+        const message_count = ws_messages.get(ip);
+        if (message_count && message_count.count >= WS_MESSAGE_LIMIT) {
+            ws.close(1008, 'Message rate limit exceeded');
+            await sendwarn(`[WS RATE LIMIT]: ${ip} has been sending too many messages!`);
+            return;
+        }
+
+        if (message_count) {
+            message_count.count++;
+            ws_messages.set(ip, message_count);
+        }
+
+        if (data.length > MAX_PAYLOAD_SIZE) {
+            ws.close(1009, 'Message to large');
+            await sendwarn(`[WS]: ${ip} sent too large message!`);
+            return;
+        }
+
         while (fetcher_running) {
             await delay(100);
         }
@@ -259,8 +328,13 @@ wss.on('connection', async (ws, req) => {
         }
     });
 
-    ws.on('close', () => sendlog(`[WS]: Client from ${req.socket.remoteAddress} disconnected`));
-    ws.on('error', (err) => {senderr(`[WS CLIENT ERROR] ${req.socket.remoteAddress}: ${err.message}`);});
+    ws.on('close', () => {
+        const current = ws_connections.get(ip) || 0;
+        if (current > 0) ws_connections.set(ip, current - 1);
+        ws_messages.delete(ip);
+        sendlog(`[WS]: Client from ${ip} disconnected`);
+    });
+    ws.on('error', (err) => {senderr(`[WS CLIENT ERROR] ${ip}: ${err.message}`);});
 
     ws.isAlive = true;
     ws.on('pong', () => {ws.isAlive = true;});
