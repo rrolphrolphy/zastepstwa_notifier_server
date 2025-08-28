@@ -41,15 +41,15 @@ function custom_timestamp() {
     return `${day}.${month}.${year} ${hours}:${minutes}:${seconds}.${milliseconds}`;
 }
 
-async function sendlog(message) {
+function sendlog(message) {
     console.log(`[${custom_timestamp()}] LOG --> ${message}`);
 }
 
-async function sendwarn(message) {
+function sendwarn(message) {
     console.warn(`[${custom_timestamp()}] WARN --> ${message}`);
 }
 
-async function senderr(message) {
+function senderr(message) {
     console.log(`[${custom_timestamp()}] ERROR -->`);
     console.log(`[${custom_timestamp()}] ERROR --> ===========================`);
     console.error(`[${custom_timestamp()}] ERROR --> `, message);
@@ -57,7 +57,7 @@ async function senderr(message) {
     console.log(`[${custom_timestamp()}] ERROR -->`);
 }
 
-function notify(etag) {
+async function notify(etag) {
     sendlog(`[NOTIFIER]: Notifying ${wss.clients.size} clients about ETag change`);
     wss.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
@@ -124,7 +124,7 @@ async function fetcher() {
                             await save_etag(latest_etag, Date.now());
                             await sendlog('[FETCHER]: ETag file updated successfully');
                             loaded_timestamp = Date.now();
-                            notify(latest_etag);
+                            await notify(latest_etag);
 
                         } else {
                             await sendlog('[FETCHER]: Current ETag equals the previous one');
@@ -138,7 +138,7 @@ async function fetcher() {
                                 await save_etag(latest_etag, Date.now());
                                 await sendlog('[FETCHER]: ETag file created successfully');
                                 loaded_timestamp = Date.now();
-                                notify(latest_etag);
+                                await notify(latest_etag);
 
                             } catch (err) {
                                 throw new Error(`Could not create ETag file (${etagfile}): ${err}`);
@@ -263,8 +263,15 @@ wss.on('connection', async (ws, req) => {
     ws_messages.set(ip, message_limit);
     sendlog(`[WS]: New client connected from ${ip}`);
 
-    while (fetcher_running) {
-        await delay(100);
+    if (fetcher_running) {
+        await new Promise(resolve => {
+            const checkInterval = setInterval(() => {
+                if (!fetcher_running) {
+                    clearInterval(checkInterval);
+                    resolve();
+                }
+            }, 100);
+        });
     }
 
     // s:
@@ -296,8 +303,15 @@ wss.on('connection', async (ws, req) => {
             return;
         }
 
-        while (fetcher_running) {
-            await delay(100);
+        if (fetcher_running) {
+            await new Promise(resolve => {
+                const checkInterval = setInterval(() => {
+                    if (!fetcher_running) {
+                        clearInterval(checkInterval);
+                        resolve();
+                    }
+                }, 100);
+            });
         }
 
         if (!(data == "")) {
