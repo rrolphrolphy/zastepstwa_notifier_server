@@ -1,15 +1,19 @@
 const express = require('express');
-const server = express();
+const http = require('http');
 const axios = require('axios');
+const WebSocket = require('ws');
 const fs = require('fs').promises;
 const path = require('path');
 const etagpath = path.join(__dirname, 'etag');
 const etagfile = path.join(etagpath, 'etag');
 
+const httpserver = express();
+const server = http.createServer(httpserver);
+const wss = new WebSocket.Server({server});
+
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 var latest_etag, fetcher_running = false, loaded_timestamp = 0;
-var clients = [];
 var internal_error = false, external_error = false, another_error = false;
 const check_timeout = 30000;
 const fetcher_daemon_timeout = 30000;
@@ -45,14 +49,16 @@ async function senderr(message) {
 }
 
 function notify(etag) {
-    sendlog(`[NOTIFIER]: Notifying ${clients.length} clients about ETag change`);
-    clients.forEach(client => {
-        client.res.json({
-            e: etag,
-            t: loaded_timestamp
-        });
+    sendlog(`[NOTIFIER]: Notifying ${wss.clients.size} clients about ETag change`);
+    wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({
+                s: 0,
+                e: etag,
+                t: loaded_timestamp
+            }));
+        };
     });
-    clients = [];
 }
 
 async function save_etag(etag) {
@@ -108,6 +114,7 @@ async function fetcher() {
                             await save_etag(latest_etag);
                             await sendlog('[FETCHER] ETag file updated successfully');
                             loaded_timestamp = old_etag[1];
+                            notify(latest_etag);
 
                         } else {
                             await sendlog('[FETCHER] Current ETag equals the previous one');
@@ -120,6 +127,8 @@ async function fetcher() {
                             try {
                                 await save_etag(latest_etag);
                                 await sendlog('[FETCHER] ETag file created successfully');
+                                loaded_timestamp = Date.now();
+                                notify(latest_etag);
 
                             } catch (err) {
                                 throw new Error(`Could not create ETag file (${etagfile}): ${err}`);
@@ -182,54 +191,59 @@ async function fetcher_daemon() {
     }
 }
 
-fetcher_daemon();
-
-server.use((req, res, next) => {
-    sendlog(`[REQUEST] Received a ${req.method} request for ${req.url} from ${req.ip} ({${req.connection.remoteAddress})`);
+httpserver.use((req, res, next) => {
+    sendlog(`[HTTP REQUEST] Received a ${req.method} request for ${req.url} from ${req.ip} ({${req.connection.remoteAddress})`);
     next();
 });
 
-server.get('/query', async (req, res) => {
-    res.send('Hello world!');
+httpserver.get('/', (req, res) => {
+    res.send('Server running')
+});
+
+httpserver.use(async (req, res) => {
+    res.status(404).send('404 not found');
+});
+
+// ws
+
+wss.on('connection', async (ws, req) => {
+    sendlog(`[WS]: New client connected from ${req.socket.remoteAddress}`);
 
     while (fetcher_running) {
         await delay(100);
     }
 
-    // if known error
-    // r:
-    // 0 - internal
-    // 1 - external
-    // 2 - another
+    // s:
+    // 0 everything ok
+    // 1 etag not available
 
-    if (internal_error) {res.status(500).json({r: 0});}
-    if (external_error) {res.status(500).json({r: 1});}
-    if (another_error) {res.status(500).json({r: 2});}
-
-    // if no etag given or not up to date
-    if (!req.query.e || req.query.e == 'null' || req.query.e == 'undefined' || req.query.e != latest_etag) {
-        res.json({
+    if (latest_etag) {
+        ws.send(JSON.stringify({
+            s: 0,
             e: latest_etag,
             t: loaded_timestamp
-        });
+        }));
+    } else {
+        ws.send(JSON.stringify({
+            s: 1
+        }));
     }
+    ws.on('close', () => sendlog(`[WS]: Client from ${req.socket.remoteAddress} disconnected`));
 
-    // go long polling
+    ws.isAlive = true;
+    ws.on('pong', () => {ws.isAlive = true;});
 
-    const client = {
-        res,
-        timestamp: Date.now(),
-        ip: req.ip
-    };
-    clients.push(client);
-
-});
-
-server.use(async (req, res) => {
-    res.status(404).send('404 not found');
+    setInterval(() => {
+        wss.clients.forEach((ws) => {
+            if (!ws.isAlive) return ws.terminate();
+            ws.isAlive = true;
+            ws.ping();
+        });
+    }, 30000);
 });
 
 server.listen(8080, () => {
+    fetcher_daemon();
     sendlog('');
     sendlog('===========================');
     sendlog('[LISTENER]: Server running!')
