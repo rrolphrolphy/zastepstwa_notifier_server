@@ -13,7 +13,7 @@ const wss = new WebSocket.Server({server});
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-var latest_etag, fetcher_running = false, loaded_timestamp = 0;
+var latest_etag, fetcher_running = true, loaded_timestamp = 0;
 var internal_error = false, external_error = false, another_error = false;
 const check_timeout = 30000;
 const fetcher_daemon_timeout = 30000;
@@ -53,7 +53,7 @@ function notify(etag) {
     wss.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
             client.send(JSON.stringify({
-                s: 0,
+                s: 1,
                 e: etag,
                 t: loaded_timestamp
             }));
@@ -61,8 +61,8 @@ function notify(etag) {
     });
 }
 
-async function save_etag(etag) {
-    const payload = {etag, timestamp: Date.now()};
+async function save_etag(etag, ts) {
+    const payload = {etag, timestamp: ts};
     await fs.writeFile(etagfile, JSON.stringify(payload));
 }
 
@@ -70,6 +70,7 @@ async function load_etag() {
     const content = await fs.readFile(etagfile, 'utf-8');
     try {
         const parsed = JSON.parse(content);
+        loaded_timestamp = parsed.timestamp;
         return [parsed.etag, parsed.timestamp];
     } catch {
         return content;
@@ -84,18 +85,18 @@ async function fetcher() {
         another_error = false;
         
         try {
-            await sendlog('[FETCHER] Sending HTTP HEAD request to ZSE server...');
+            await sendlog('[FETCHER]: Sending HTTP HEAD request to ZSE server...');
 
             const response = await axios.head(axios_url, {timeout: axios_timeout});
 
             if (response.status === 200) {
                 external_error = false;
-                await sendlog('[FETCHER] Server healthy, returned 200 OK');
+                await sendlog('[FETCHER]: Server healthy, returned 200 OK');
 
                 if (response.headers['etag']) {
                     another_error = false;
                     latest_etag = response.headers['etag'].replace(/^"|"$/g, '');
-                    await sendlog(`[FETCHER] Gathered ETag: ${latest_etag}`);
+                    await sendlog(`[FETCHER]: Gathered ETag: ${latest_etag}`);
 
                     try {
                         await fs.mkdir(etagpath, {
@@ -110,23 +111,23 @@ async function fetcher() {
                         const old_etag = await load_etag();
 
                         if (old_etag[0] !== latest_etag) {
-                            await sendlog('[FETCHER] ETag changed, updating file...');
-                            await save_etag(latest_etag);
-                            await sendlog('[FETCHER] ETag file updated successfully');
-                            loaded_timestamp = old_etag[1];
+                            await sendlog('[FETCHER]: ETag changed, updating file...');
+                            await save_etag(latest_etag, Date.now());
+                            await sendlog('[FETCHER]: ETag file updated successfully');
+                            loaded_timestamp = Date.now();
                             notify(latest_etag);
 
                         } else {
-                            await sendlog('[FETCHER] Current ETag equals the previous one');
+                            await sendlog('[FETCHER]: Current ETag equals the previous one');
                         }
 
                     } catch (err) {
                         if (err.code === 'ENOENT') {
-                            await sendlog('[FETCHER] No ETag file found, creating new one...');
+                            await sendlog('[FETCHER]: No ETag file found, creating new one...');
 
                             try {
-                                await save_etag(latest_etag);
-                                await sendlog('[FETCHER] ETag file created successfully');
+                                await save_etag(latest_etag, Date.now());
+                                await sendlog('[FETCHER]: ETag file created successfully');
                                 loaded_timestamp = Date.now();
                                 notify(latest_etag);
 
@@ -141,33 +142,26 @@ async function fetcher() {
 
                 } else {
                     another_error = true;
-                    await senderr(`[FETCHER] Couldn't receive ETag header`);
+                    await senderr(`[FETCHER]: Couldn't receive ETag header`);
                 }
 
             } else {
                 external_error = true;
-                await senderr(`[FETCHER] Server returned status: ${response.status}`);
+                await senderr(`[FETCHER]: Server returned status: ${response.status}`);
             }
 
         } catch (error) {
             if (error.code === 'ECONNABORTED') {
                 another_error = true;
-                await senderr(`[FETCHER] Request timeout, server not responding: ${error.message}`);
+                await senderr(`[FETCHER]: Request timeout, server not responding: ${error.message}`);
 
             } else if (error.code === 'ECONNREFUSED') {
                 external_error = true;
-                await senderr(`[FETCHER] Connection refused, server down: ${error.message}`);
+                await senderr(`[FETCHER]: Connection refused, server down: ${error.message}`);
 
             } else if (error.response) {
                 another_error = true;
-                await senderr(`[FETCHER] Unknown error: ${error.response.status}, Full error message: ${error.message}`);
-
-            } else if (error.message && error.message.includes('Could not create')) {
-                throw error;
-
-            } else if (error.message && error.message.includes('File system error')) {
-                throw error;
-
+                await senderr(`[FETCHER]: Unknown error: ${error.response.status}, Full error message: ${error.message}`);
             } else {
                 throw error;
             }
@@ -192,7 +186,7 @@ async function fetcher_daemon() {
 }
 
 httpserver.use((req, res, next) => {
-    sendlog(`[HTTP REQUEST] Received a ${req.method} request for ${req.url} from ${req.ip} ({${req.connection.remoteAddress})`);
+    sendlog(`[HTTP REQUEST] ${req.method} ${req.url} from ${req.ip} (${req.connection.remoteAddress})`);
     next();
 });
 
@@ -206,6 +200,16 @@ httpserver.use(async (req, res) => {
 
 // ws
 
+// keep-alive
+
+setInterval(() => {
+    wss.clients.forEach((ws) => {
+        if (!ws.isAlive) return ws.terminate();
+        ws.isAlive = false;
+        ws.ping();
+    });
+}, 30000);
+
 wss.on('connection', async (ws, req) => {
     sendlog(`[WS]: New client connected from ${req.socket.remoteAddress}`);
 
@@ -214,33 +218,57 @@ wss.on('connection', async (ws, req) => {
     }
 
     // s:
-    // 0 everything ok
-    // 1 etag not available
+    // 0 new etag
+    // 1 etag up to date
+    // 2 internal error
+    // 3 another error
+    // 4 external error
 
-    if (latest_etag) {
-        ws.send(JSON.stringify({
-            s: 0,
-            e: latest_etag,
-            t: loaded_timestamp
-        }));
-    } else {
-        ws.send(JSON.stringify({
-            s: 1
-        }));
-    }
+    // if client sends 0 means respond me with an etag
+
+    ws.on('message', async function message(data) {
+        while (fetcher_running) {
+            await delay(100);
+        }
+
+        if (!(data == "")) {
+            if (latest_etag) {
+
+                // check if any known error exist
+                if (internal_error) {ws.send(JSON.stringify({s: 2}));
+                } else if (another_error) {ws.send(JSON.stringify({s: 3}));
+                } else if (external_error) {ws.send(JSON.stringify({s: 4}));}
+                else {
+                    // if no error
+
+                    if (data == latest_etag) {ws.send(JSON.stringify({s: 1}));}
+                    else {
+                        ws.send(JSON.stringify({
+                            s: 0,
+                            e: latest_etag,
+                            t: loaded_timestamp
+                        }));
+                    }
+                }
+
+            } else {
+                ws.send(JSON.stringify({
+                    s: 2
+                }));
+            }
+        }
+    });
+
     ws.on('close', () => sendlog(`[WS]: Client from ${req.socket.remoteAddress} disconnected`));
+    ws.on('error', (err) => {senderr(`[WS CLIENT ERROR] ${req.socket.remoteAddress}: ${err.message}`);});
 
     ws.isAlive = true;
     ws.on('pong', () => {ws.isAlive = true;});
-
-    setInterval(() => {
-        wss.clients.forEach((ws) => {
-            if (!ws.isAlive) return ws.terminate();
-            ws.isAlive = true;
-            ws.ping();
-        });
-    }, 30000);
 });
+
+wss.on('error', (err) => {
+    senderr(`[WS SERVER ERROR]: ${err.message}`);
+})
 
 server.listen(8080, () => {
     fetcher_daemon();
