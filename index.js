@@ -13,6 +13,7 @@ const axios = require('axios');
 const WebSocket = require('ws');
 const fs = require('fs').promises;
 const path = require('path');
+const logger = require('./logger');
 const etagpath = path.join(__dirname, 'etag');
 const etagfile = path.join(etagpath, 'etag');
 
@@ -41,21 +42,25 @@ function custom_timestamp() {
     return `${day}.${month}.${year} ${hours}:${minutes}:${seconds}.${milliseconds}`;
 }
 
-function sendlog(message) {
-    console.log(`[${custom_timestamp()}] LOG --> ${message}`);
-}
+// function sendlog(message) {
+//     console.log(`[${custom_timestamp()}] LOG --> ${message}`);
+// }
 
-function sendwarn(message) {
-    console.warn(`[${custom_timestamp()}] WARN --> ${message}`);
-}
+// function sendwarn(message) {
+//     console.warn(`[${custom_timestamp()}] WARN --> ${message}`);
+// }
 
-function senderr(message) {
-    console.log(`[${custom_timestamp()}] ERROR -->`);
-    console.log(`[${custom_timestamp()}] ERROR --> ===========================`);
-    console.error(`[${custom_timestamp()}] ERROR --> `, message);
-    console.log(`[${custom_timestamp()}] ERROR --> ===========================`);
-    console.log(`[${custom_timestamp()}] ERROR -->`);
-}
+// function senderr(message) {
+//     console.log(`[${custom_timestamp()}] ERROR -->`);
+//     console.log(`[${custom_timestamp()}] ERROR --> ===========================`);
+//     console.error(`[${custom_timestamp()}] ERROR --> `, message);
+//     console.log(`[${custom_timestamp()}] ERROR --> ===========================`);
+//     console.log(`[${custom_timestamp()}] ERROR -->`);
+// }
+
+function sendlog(message) { logger.info(message); }
+function sendwarn(message) { logger.warn(message); }
+function senderr(message) { logger.error(message); }
 
 async function notify(etag) {
     sendlog(`[NOTIFIER]: Notifying ${wss.clients.size} clients about ETag change`);
@@ -365,4 +370,40 @@ server.listen(8080, () => {
     sendlog('[LISTENER]: Server running!')
     sendlog('===========================');
     sendlog('');
+});
+
+// terminate handler
+
+function shutdown() {
+    sendlog('[SHUTDOWN] Closing WebSocket server...');
+    wss.close(() => { sendlog('[SHUTDOWN]: WebSocket server closed'); });
+    sendlog('[SHUTDOWN]: Closing HTTP server...');
+    server.close(() => {
+        sendlog('[SHUTDOWN]: HTTP server closed');
+        process.exit(0);
+    });
+
+    setTimeout(() => {
+        sendwarn('[SHUTDOWN]: Forced exit after timeout');
+        process.exit(1);
+    }, 5000);
+}
+
+process.on('SIGINT', () => {
+    sendwarn('Server interrupted by user from keyboard');
+    shutdown();
+});
+
+process.on('SIGTERM', () => {
+    sendwarn('Server terminated by SIGTERM');
+    shutdown();
+});
+
+process.on('uncaughtException', (err) => {
+    senderr(`Uncaught exception: ${err.message}`);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+    senderr(`Unhandled rejection: ${reason}`);
 });
