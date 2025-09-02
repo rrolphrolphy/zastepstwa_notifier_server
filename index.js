@@ -42,22 +42,6 @@ function custom_timestamp() {
     return `${day}.${month}.${year} ${hours}:${minutes}:${seconds}.${milliseconds}`;
 }
 
-// function sendlog(message) {
-//     console.log(`[${custom_timestamp()}] LOG --> ${message}`);
-// }
-
-// function sendwarn(message) {
-//     console.warn(`[${custom_timestamp()}] WARN --> ${message}`);
-// }
-
-// function senderr(message) {
-//     console.log(`[${custom_timestamp()}] ERROR -->`);
-//     console.log(`[${custom_timestamp()}] ERROR --> ===========================`);
-//     console.error(`[${custom_timestamp()}] ERROR --> `, message);
-//     console.log(`[${custom_timestamp()}] ERROR --> ===========================`);
-//     console.log(`[${custom_timestamp()}] ERROR -->`);
-// }
-
 function sendlog(message) { logger.info(message); }
 function sendwarn(message) { logger.warn(message); }
 function senderr(message) { logger.error(message); }
