@@ -30,18 +30,6 @@ const fetcher_daemon_timeout = 30000;
 const axios_timeout = 10000;
 const axios_url = 'http://127.0.0.1:8090';
 
-function custom_timestamp() {
-    const now = new Date();
-    const day = String(now.getDate()).padStart(2, '0');
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const year = now.getFullYear();
-    const hours = String(now.getHours()).padStart(2, '0');
-    const minutes = String(now.getMinutes()).padStart(2, '0');
-    const seconds = String(now.getSeconds()).padStart(2, '0');
-    const milliseconds = String(now.getMilliseconds()).padStart(3, '0');
-    return `${day}.${month}.${year} ${hours}:${minutes}:${seconds}.${milliseconds}`;
-}
-
 function sendlog(message) { logger.info(message); }
 function sendwarn(message) { logger.warn(message); }
 function senderr(message) { logger.error(message); }
