@@ -39,7 +39,7 @@ async function notify(etag) {
     wss.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
             client.send(JSON.stringify({
-                s: 1,
+                s: 0,
                 e: etag,
                 t: loaded_timestamp
             }));
