@@ -25,6 +25,7 @@ const check_timeout = 30000;
 const fetcher_daemon_timeout = 30000;
 const axios_timeout = 10000;
 const axios_url = 'http://zastepstwa.zse.bydgoszcz.pl/';
+const PORT = process.env.PORT || 8080;
 
 const email_recipients = process.env.EMAIL_RECIPIENTS ? process.env.EMAIL_RECIPIENTS.split(',').map(email => email.trim()): [];
 
@@ -242,17 +243,17 @@ httpserver.use(async (req, res) => {
     res.status(404).send('404 not found');
 });
 
-server.listen(8080, () => {
+server.listen(PORT, () => {
     const required_env_vars = ['SMTP_MAIL', 'SMTP_PASS', 'EMAIL_FROM', 'EMAIL_RECIPIENTS'];
     const missing_vars = required_env_vars.filter(var_name => !process.env[var_name]);
 
     if (missing_vars.length > 0) {
         senderr(`[CONFIG ERROR]: Missing required environment variables: ${missing_vars.join(', ')}`);
-        process.exit(1);
+        return;
     }
     if (email_recipients.length === 0) {
         senderr('[CONFIG ERROR]: No email recipients configured in EMAIL_RECIPIENTS');
-        process.exit(1);
+        return;
     }
 
     fetcher_daemon();
