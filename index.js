@@ -16,13 +16,15 @@ const etagfile = path.join(etagpath, 'etag');
 
 const httpserver = express();
 const server = http.createServer(httpserver);
+server.keepAliveTimeout = 30000;
+server.headersTimeout = 35000;
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 var latest_etag, fetcher_running = true, loaded_timestamp = 0;
 const check_timeout = 30000;
 const fetcher_daemon_timeout = 30000;
-const axios_timeout = 8000;
+const axios_timeout = 5000;
 const axios_url = 'https://zastepstwa.zse.bydgoszcz.pl/';
 const PORT = process.env.PORT || 8080;
 
