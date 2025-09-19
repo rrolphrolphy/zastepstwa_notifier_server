@@ -9,7 +9,6 @@ const http = require('http');
 const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
-const logger = require('./logger');
 const nodemailer = require('nodemailer');
 const etagpath = path.join(__dirname, 'etag');
 const etagfile = path.join(etagpath, 'etag');
@@ -30,10 +29,6 @@ const PORT = process.env.PORT || 8080;
 
 const email_recipients = process.env.EMAIL_RECIPIENTS ? process.env.EMAIL_RECIPIENTS.split(',').map(email => email.trim()): [];
 
-function sendlog(message) { logger.info(message); }
-function sendwarn(message) { logger.warn(message); }
-function senderr(message) { logger.error(message); }
-
 async function create_transporter() {
     return nodemailer.createTransport({
         host: "smtp.gmail.com",
@@ -47,9 +42,9 @@ async function create_transporter() {
 }
 
 async function notify(etag, changed = true) {
-    await sendlog('[EMAIL]: Attempting to send an email to recipients...');
+    await console.log('[EMAIL]: Attempting to send an email to recipients...');
     if (email_recipients.length === 0) {
-        sendwarn('[EMAIL]: No recipients configured.');
+        console.warn('[EMAIL]: No recipients configured.');
         return;
     }
 
@@ -73,9 +68,9 @@ async function notify(etag, changed = true) {
             });
 
         }
-        sendlog(`[EMAIL]: Notification has been send successfully to ${email_recipients.length} mails`);
+        console.log(`[EMAIL]: Notification has been send successfully to ${email_recipients.length} mails`);
     } catch (error) {
-        senderr(`[EMAIL ERROR]: Failed to send email: ${error.message}`);
+        console.error(`[EMAIL ERROR]: Failed to send email: ${error.message}`);
     }
 }
 
@@ -100,86 +95,40 @@ async function fetcher() {
         fetcher_running = true;
         
         try {
-            await sendlog('[FETCHER]: Sending HTTP HEAD request to ZSE server...');
-
+            
             const response = await axios.head(axios_url, {timeout: axios_timeout});
 
             if (response.status === 200) {
-                await sendlog('[FETCHER]: Server healthy, returned 200 OK');
 
                 if (response.headers['etag']) {
                     latest_etag = response.headers['etag'].replace(/^"|"$/g, '');
-                    await sendlog(`[FETCHER]: Gathered ETag: ${latest_etag}`);
-
-                    try {
-                        await fs.mkdir(etagpath, {
-                            recursive: true
-                        });
-
-                    } catch (err) {
-                        throw new Error(`Could not create directory ${etagpath}: ${err}`);
-                    }
-
+                    
                     try {
                         const old_etag = await load_etag();
-
                         if (old_etag[0] !== latest_etag) {
-                            await sendlog('[FETCHER]: ETag changed, updating file...');
+                            await console.log(`[FETCHER]: ETag CHANGED: ${latest_etag}`);
                             await save_etag(latest_etag, Date.now());
-                            await sendlog('[FETCHER]: ETag file updated successfully');
                             loaded_timestamp = Date.now();
                             await notify(latest_etag, true);
-
-                        } else {
-                            await sendlog('[FETCHER]: Current ETag equals the previous one');
                         }
-
                     } catch (err) {
                         if (err.code === 'ENOENT') {
-                            await sendlog('[FETCHER]: No ETag file found, creating new one...');
-
-                            try {
-                                await save_etag(latest_etag, Date.now());
-                                await sendlog('[FETCHER]: ETag file created successfully');
-                                loaded_timestamp = Date.now();
-                                await notify(latest_etag, true);
-
-                            } catch (err) {
-                                throw new Error(`Could not create ETag file (${etagfile}): ${err}`);
-                            }
-
-                        } else {
-                            throw new Error(`File system error: ${err}`);
+                            await console.log('[FETCHER]: Creating first ETag file');
+                            await save_etag(latest_etag, Date.now());
+                            loaded_timestamp = Date.now();
+                            await notify(latest_etag, true);
                         }
                     }
-
-                } else {
-                    await senderr(`[FETCHER]: Couldn't receive ETag header`);
-                    await notify('', false);
                 }
-
-            } else {
-                await senderr(`[FETCHER]: Server returned status: ${response.status}`);
-                await notify('', false);
             }
-
         } catch (error) {
-            if (error.code === 'ECONNABORTED') {
-                await senderr(`[FETCHER]: Request timeout, server not responding: ${error.message}`);
-                await notify('', false);
-
-            } else if (error.code === 'ECONNREFUSED') {
-                await senderr(`[FETCHER]: Connection refused, server down: ${error.message}`);
-                await notify('', false);
-            } else if (error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' || error.code === 'CERT_HAS_EXPIRED') {
-                await senderr(`[FETCHER]: SSL certificate error: ${error.message}`);
-                await notify('', false);
-            } else if (error.response) {
-                await senderr(`[FETCHER]: Unknown error: ${error.response.status}, Full error message: ${error.message}`);
-                await notify('', false);
-            } else {
-                throw error;
-            }
+            if (error.code === 'ECONNREFUSED') {
+                await console.error(`[FETCHER]: Connection refused - server down`);
+            } else if (error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE') {
+                await console.error(`[FETCHER]: SSL certificate error`);
+            } else if (error.response && error.response.status >= 400) {
+                await console.error(`[FETCHER]: HTTP error: ${error.response.status}`);
+            } else throw error;
         }
 
         fetcher_running = false;
@@ -189,31 +138,33 @@ async function fetcher() {
 
 async function fetcher_daemon() {
     try {
-        await sendlog('[FETCHER DAEMON]: Running');
+        await console.log('[FETCHER DAEMON]: Running');
         await fetcher();
     } catch (error) {
         fetcher_running = false;
-        await senderr(`[FETCHER DAEMON]: Fetcher crashed due to: ${error.message}`);
+        await console.error(`[FETCHER DAEMON]: Fetcher crashed due to: ${error.message}`);
         await notify('', false);
-        await senderr(`[FETCHER DAEMON]: Restarting fetcher...`)
+        await console.error(`[FETCHER DAEMON]: Restarting fetcher...`)
         setTimeout(fetcher_daemon, fetcher_daemon_timeout);
     }
 }
 
 httpserver.use((req, res, next) => {
-    const ip = req.ip || req.connection.remoteAddress;
     const now = Date.now();
+    const ip = req.ip || req.connection.remoteAddress;
+    
     let requests = http_requests.get(ip);
     if (!requests || now > requests.resetTime) {
         requests = { count: 0, resetTime: now + 60000 };
     }
+    
     if (requests.count >= HTTP_REQUEST_LIMIT) {
-        sendwarn(`[HTTP REQUEST]: ${ip} is connecting to many times!`)
         res.status(429).send('You have been rate limited');
+        return;
     }
+    
     requests.count++;
     http_requests.set(ip, requests);
-    sendlog(`[HTTP REQUEST]: ${req.method} ${req.url} from ${ip}`);
     next();
 });
 
@@ -249,52 +200,52 @@ server.listen(PORT, () => {
     const missing_vars = required_env_vars.filter(var_name => !process.env[var_name]);
 
     if (missing_vars.length > 0) {
-        senderr(`[CONFIG ERROR]: Missing required environment variables: ${missing_vars.join(', ')}`);
+        console.error(`[CONFIG ERROR]: Missing required environment variables: ${missing_vars.join(', ')}`);
         return;
     }
     if (email_recipients.length === 0) {
-        senderr('[CONFIG ERROR]: No email recipients configured in EMAIL_RECIPIENTS');
+        console.error('[CONFIG ERROR]: No email recipients configured in EMAIL_RECIPIENTS');
         return;
     }
 
     fetcher_daemon();
-    sendlog('');
-    sendlog('===========================');
-    sendlog('[LISTENER]: Server running!')
-    sendlog('===========================');
-    sendlog('');
+    console.log('');
+    console.log('===========================');
+    console.log('[LISTENER]: Server running!')
+    console.log('===========================');
+    console.log('');
 });
 
 // terminate handler
 
 function shutdown() {
-    sendlog('[SHUTDOWN]: Closing HTTP server...');
+    console.log('[SHUTDOWN]: Closing HTTP server...');
     server.close(() => {
-        sendlog('[SHUTDOWN]: HTTP server closed');
+        console.log('[SHUTDOWN]: HTTP server closed');
         process.exit(0);
     });
 
     setTimeout(() => {
-        sendwarn('[SHUTDOWN]: Forced exit after timeout');
+        console.warn('[SHUTDOWN]: Forced exit after timeout');
         process.exit(1);
     }, 5000);
 }
 
 process.on('SIGINT', () => {
-    sendwarn('Server interrupted by user from keyboard');
+    console.warn('Server interrupted by user from keyboard');
     shutdown();
 });
 
 process.on('SIGTERM', () => {
-    sendwarn('Server terminated by SIGTERM');
+    console.warn('Server terminated by SIGTERM');
     shutdown();
 });
 
 process.on('uncaughtException', (err) => {
-    senderr(`Uncaught exception: ${err.message}`);
+    console.error(`Uncaught exception: ${err.message}`);
     process.exit(1);
 });
 
 process.on('unhandledRejection', (reason) => {
-    senderr(`Unhandled rejection: ${reason}`);
+    console.error(`Unhandled rejection: ${reason}`);
 });
