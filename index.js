@@ -20,11 +20,10 @@ const server = http.createServer(httpserver);
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 var latest_etag, fetcher_running = true, loaded_timestamp = 0;
-var internal_error = false, external_error = false, another_error = false;
 const check_timeout = 30000;
 const fetcher_daemon_timeout = 30000;
-const axios_timeout = 10000;
-const axios_url = 'http://zastepstwa.zse.bydgoszcz.pl/';
+const axios_timeout = 8000;
+const axios_url = 'https://zastepstwa.zse.bydgoszcz.pl/';
 const PORT = process.env.PORT || 8080;
 
 const email_recipients = process.env.EMAIL_RECIPIENTS ? process.env.EMAIL_RECIPIENTS.split(',').map(email => email.trim()): [];
@@ -97,9 +96,6 @@ async function load_etag() {
 async function fetcher() {
     while (true) {
         fetcher_running = true;
-        internal_error = false;
-        external_error = false;
-        another_error = false;
         
         try {
             await sendlog('[FETCHER]: Sending HTTP HEAD request to ZSE server...');
@@ -107,11 +103,9 @@ async function fetcher() {
             const response = await axios.head(axios_url, {timeout: axios_timeout});
 
             if (response.status === 200) {
-                external_error = false;
                 await sendlog('[FETCHER]: Server healthy, returned 200 OK');
 
                 if (response.headers['etag']) {
-                    another_error = false;
                     latest_etag = response.headers['etag'].replace(/^"|"$/g, '');
                     await sendlog(`[FETCHER]: Gathered ETag: ${latest_etag}`);
 
@@ -158,30 +152,27 @@ async function fetcher() {
                     }
 
                 } else {
-                    another_error = true;
                     await senderr(`[FETCHER]: Couldn't receive ETag header`);
                     await notify('', false);
                 }
 
             } else {
-                external_error = true;
                 await senderr(`[FETCHER]: Server returned status: ${response.status}`);
                 await notify('', false);
             }
 
         } catch (error) {
             if (error.code === 'ECONNABORTED') {
-                another_error = true;
                 await senderr(`[FETCHER]: Request timeout, server not responding: ${error.message}`);
                 await notify('', false);
 
             } else if (error.code === 'ECONNREFUSED') {
-                external_error = true;
                 await senderr(`[FETCHER]: Connection refused, server down: ${error.message}`);
                 await notify('', false);
-
+            } else if (error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' || error.code === 'CERT_HAS_EXPIRED') {
+                await senderr(`[FETCHER]: SSL certificate error: ${error.message}`);
+                await notify('', false);
             } else if (error.response) {
-                another_error = true;
                 await senderr(`[FETCHER]: Unknown error: ${error.response.status}, Full error message: ${error.message}`);
                 await notify('', false);
             } else {
@@ -199,7 +190,6 @@ async function fetcher_daemon() {
         await sendlog('[FETCHER DAEMON]: Running');
         await fetcher();
     } catch (error) {
-        internal_error = true;
         fetcher_running = false;
         await senderr(`[FETCHER DAEMON]: Fetcher crashed due to: ${error.message}`);
         await notify('', false);
@@ -234,6 +224,15 @@ setInterval(() => {
         }
     }
 }, 60000);
+
+httpserver.get('/health', (req, res) => {
+    res.status(200).json({ 
+        status: 'OK', 
+        timestamp: new Date().toISOString(),
+        latest_etag: latest_etag,
+        fetcher_running: fetcher_running
+    });
+});
 
 httpserver.get('/', (req, res) => {
     res.send('Server running')
