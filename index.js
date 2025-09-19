@@ -1,5 +1,4 @@
 const HTTP_REQUEST_LIMIT = 30;
-const MAX_PAYLOAD_SIZE = 64;
 
 const http_requests = new Map();
 
@@ -12,7 +11,6 @@ const fs = require('fs').promises;
 const path = require('path');
 const logger = require('./logger');
 const nodemailer = require('nodemailer');
-const { google } = require('googleapis');
 const etagpath = path.join(__dirname, 'etag');
 const etagfile = path.join(etagpath, 'etag');
 
@@ -26,42 +24,28 @@ var internal_error = false, external_error = false, another_error = false;
 const check_timeout = 30000;
 const fetcher_daemon_timeout = 30000;
 const axios_timeout = 10000;
-const axios_url = 'http://127.0.0.1:8090';
+const axios_url = 'http://zastepstwa.zse.bydgoszcz.pl/';
 
 const email_recipients = process.env.EMAIL_RECIPIENTS ? process.env.EMAIL_RECIPIENTS.split(',').map(email => email.trim()): [];
-
-const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-const REDIRECT_URI = "https://developers.google.com/oauthplayground";
-const REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
-const oAuth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
-oAuth2Client.setCredentials({ refresh_token: REFRESH_TOKEN });
 
 function sendlog(message) { logger.info(message); }
 function sendwarn(message) { logger.warn(message); }
 function senderr(message) { logger.error(message); }
 
 async function create_transporter() {
-    const accessTokenObj = await oAuth2Client.getAccessToken();
-    const accessToken = typeof accessTokenObj === 'string' ? accessTokenObj : accessTokenObj.token;
-
     return nodemailer.createTransport({
-        service: "gmail",
+        host: "smtp.gmail.com",
+        port: 587,
+        secure: false,
         auth: {
-            type: "OAuth2",
-            user: process.env.SMTP_USER,
-            clientId: CLIENT_ID,
-            clientSecret: CLIENT_SECRET,
-            refreshToken: REFRESH_TOKEN,
-            accessToken: accessToken,
+            user: process.env.SMTP_MAIL,
+            pass: process.env.SMTP_PASS
         },
-        tls: {
-            rejectUnauthorized: false
-        }
     });
 }
 
 async function notify(etag, changed = true) {
+    await sendlog('[EMAIL]: Attempting to send an email to recipients...');
     if (email_recipients.length === 0) {
         sendwarn('[EMAIL]: No recipients configured.');
         return;
@@ -87,7 +71,7 @@ async function notify(etag, changed = true) {
             });
 
         }
-        sendlog(`[EMAIL]: Notification sent to ${email_recipients.length} mails`);
+        sendlog(`[EMAIL]: Notification has been send successfully to ${email_recipients.length} mails`);
     } catch (error) {
         senderr(`[EMAIL ERROR]: Failed to send email: ${error.message}`);
     }
@@ -258,8 +242,8 @@ httpserver.use(async (req, res) => {
     res.status(404).send('404 not found');
 });
 
-server.listen(80, () => {
-    const required_env_vars = ['SMTP_USER', 'EMAIL_FROM', 'EMAIL_RECIPIENTS', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REFRESH_TOKEN'];
+server.listen(8080, () => {
+    const required_env_vars = ['SMTP_MAIL', 'SMTP_PASS', 'EMAIL_FROM', 'EMAIL_RECIPIENTS'];
     const missing_vars = required_env_vars.filter(var_name => !process.env[var_name]);
 
     if (missing_vars.length > 0) {
