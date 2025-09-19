@@ -1,11 +1,5 @@
-const HTTP_REQUEST_LIMIT = 30;
-
-const http_requests = new Map();
-
 require('dotenv').config();
 
-const express = require('express');
-const http = require('http');
 const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
@@ -14,18 +8,13 @@ const nodemailer = require('nodemailer');
 const etagpath = path.join(__dirname, 'etag');
 const etagfile = path.join(etagpath, 'etag');
 
-const httpserver = express();
-const server = http.createServer(httpserver);
-
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-var latest_etag, fetcher_running = true, loaded_timestamp = 0;
-var internal_error = false, external_error = false, another_error = false;
+var latest_etag, loaded_timestamp = 0;
 const check_timeout = 30000;
 const fetcher_daemon_timeout = 30000;
 const axios_timeout = 10000;
-const axios_url = 'http://zastepstwa.zse.bydgoszcz.pl/';
-const PORT = process.env.PORT || 8080;
+const axios_url = 'https://zastepstwa.zse.bydgoszcz.pl/';
 
 const email_recipients = process.env.EMAIL_RECIPIENTS ? process.env.EMAIL_RECIPIENTS.split(',').map(email => email.trim()): [];
 
@@ -57,7 +46,7 @@ async function notify(etag, changed = true) {
         `Błąd serwera powiadamiania o zastępstwach`;
     
     const message = changed ?
-        `ETag: ${etag}\nTimestamp: ${new Date(loaded_timestamp).toISOString()}` : ``;
+        `ETag: ${etag}\nTimestamp: ${new Date(loaded_timestamp).toISOString()}` : `Error`;
 
     try {
         const transporter = await create_transporter();
@@ -96,22 +85,15 @@ async function load_etag() {
 
 async function fetcher() {
     while (true) {
-        fetcher_running = true;
-        internal_error = false;
-        external_error = false;
-        another_error = false;
-        
         try {
             await sendlog('[FETCHER]: Sending HTTP HEAD request to ZSE server...');
 
             const response = await axios.head(axios_url, {timeout: axios_timeout});
 
             if (response.status === 200) {
-                external_error = false;
                 await sendlog('[FETCHER]: Server healthy, returned 200 OK');
 
                 if (response.headers['etag']) {
-                    another_error = false;
                     latest_etag = response.headers['etag'].replace(/^"|"$/g, '');
                     await sendlog(`[FETCHER]: Gathered ETag: ${latest_etag}`);
 
@@ -158,30 +140,27 @@ async function fetcher() {
                     }
 
                 } else {
-                    another_error = true;
                     await senderr(`[FETCHER]: Couldn't receive ETag header`);
                     await notify('', false);
                 }
 
             } else {
-                external_error = true;
                 await senderr(`[FETCHER]: Server returned status: ${response.status}`);
                 await notify('', false);
             }
 
         } catch (error) {
             if (error.code === 'ECONNABORTED') {
-                another_error = true;
                 await senderr(`[FETCHER]: Request timeout, server not responding: ${error.message}`);
                 await notify('', false);
 
             } else if (error.code === 'ECONNREFUSED') {
-                external_error = true;
                 await senderr(`[FETCHER]: Connection refused, server down: ${error.message}`);
                 await notify('', false);
-
+            } else if (error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' || error.code === 'CERT_HAS_EXPIRED') {
+                await senderr(`[FETCHER]: SSL certificate error: ${error.message}`);
+                await notify('', false);
             } else if (error.response) {
-                another_error = true;
                 await senderr(`[FETCHER]: Unknown error: ${error.response.status}, Full error message: ${error.message}`);
                 await notify('', false);
             } else {
@@ -189,7 +168,6 @@ async function fetcher() {
             }
         }
 
-        fetcher_running = false;
         await delay(check_timeout);
     }
 }
@@ -199,8 +177,6 @@ async function fetcher_daemon() {
         await sendlog('[FETCHER DAEMON]: Running');
         await fetcher();
     } catch (error) {
-        internal_error = true;
-        fetcher_running = false;
         await senderr(`[FETCHER DAEMON]: Fetcher crashed due to: ${error.message}`);
         await notify('', false);
         await senderr(`[FETCHER DAEMON]: Restarting fetcher...`)
@@ -208,42 +184,7 @@ async function fetcher_daemon() {
     }
 }
 
-httpserver.use((req, res, next) => {
-    const ip = req.ip || req.connection.remoteAddress;
-    const now = Date.now();
-    let requests = http_requests.get(ip);
-    if (!requests || now > requests.resetTime) {
-        requests = { count: 0, resetTime: now + 60000 };
-    }
-    if (requests.count >= HTTP_REQUEST_LIMIT) {
-        sendwarn(`[HTTP REQUEST]: ${ip} is connecting to many times!`)
-        res.status(429).send('You have been rate limited');
-    }
-    requests.count++;
-    http_requests.set(ip, requests);
-    sendlog(`[HTTP REQUEST]: ${req.method} ${req.url} from ${ip}`);
-    next();
-});
-
-setInterval(() => {
-    const now = Date.now();
-    
-    for (const [ip, data] of http_requests) {
-        if (now > data.resetTime) {
-            http_requests.delete(ip);
-        }
-    }
-}, 60000);
-
-httpserver.get('/', (req, res) => {
-    res.send('Server running')
-});
-
-httpserver.use(async (req, res) => {
-    res.status(404).send('404 not found');
-});
-
-server.listen(PORT, () => {
+function start() {
     const required_env_vars = ['SMTP_MAIL', 'SMTP_PASS', 'EMAIL_FROM', 'EMAIL_RECIPIENTS'];
     const missing_vars = required_env_vars.filter(var_name => !process.env[var_name]);
 
@@ -259,33 +200,23 @@ server.listen(PORT, () => {
     fetcher_daemon();
     sendlog('');
     sendlog('===========================');
-    sendlog('[LISTENER]: Server running!')
+    sendlog('[BACKGROUND WORKER]: Running!')
     sendlog('===========================');
     sendlog('');
-});
-
-// terminate handler
+}
 
 function shutdown() {
-    sendlog('[SHUTDOWN]: Closing HTTP server...');
-    server.close(() => {
-        sendlog('[SHUTDOWN]: HTTP server closed');
-        process.exit(0);
-    });
-
-    setTimeout(() => {
-        sendwarn('[SHUTDOWN]: Forced exit after timeout');
-        process.exit(1);
-    }, 5000);
+    sendlog('[SHUTDOWN]: Background worker shutting down...');
+    process.exit(0);
 }
 
 process.on('SIGINT', () => {
-    sendwarn('Server interrupted by user from keyboard');
+    sendwarn('Worker interrupted by user from keyboard');
     shutdown();
 });
 
 process.on('SIGTERM', () => {
-    sendwarn('Server terminated by SIGTERM');
+    sendwarn('Worker terminated by SIGTERM');
     shutdown();
 });
 
@@ -297,3 +228,5 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason) => {
     senderr(`Unhandled rejection: ${reason}`);
 });
+
+start();
