@@ -7,11 +7,7 @@ require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const axios = require('axios');
-const fs = require('fs').promises;
-const path = require('path');
 const nodemailer = require('nodemailer');
-const etagpath = path.join(__dirname, 'etag');
-const etagfile = path.join(etagpath, 'etag');
 
 const httpserver = express();
 const server = http.createServer(httpserver);
@@ -20,7 +16,11 @@ server.headersTimeout = 35000;
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-var latest_etag, fetcher_running = true, loaded_timestamp = 0;
+var latest_etag = null;
+var fetcher_running = true;
+var loaded_timestamp = 0;
+var is_first_fetch = true;
+
 const check_timeout = 30000;
 const fetcher_daemon_timeout = 30000;
 const axios_timeout = 5000;
@@ -42,7 +42,7 @@ async function create_transporter() {
 }
 
 async function notify(etag, changed = true) {
-    await console.log('[EMAIL]: Attempting to send an email to recipients...');
+    console.log('[EMAIL]: Attempting to send an email to recipients...');
     if (email_recipients.length === 0) {
         console.warn('[EMAIL]: No recipients configured.');
         return;
@@ -66,27 +66,10 @@ async function notify(etag, changed = true) {
                 text: message,
                 html: `<p>${message.replace(/\n/g, '<br>')}</p>`
             });
-
         }
-        console.log(`[EMAIL]: Notification has been send successfully to ${email_recipients.length} mails`);
+        console.log(`[EMAIL]: Notification has been sent successfully to ${email_recipients.length} mails`);
     } catch (error) {
         console.error(`[EMAIL ERROR]: Failed to send email: ${error.message}`);
-    }
-}
-
-async function save_etag(etag, ts) {
-    const payload = {etag, timestamp: ts};
-    await fs.writeFile(etagfile, JSON.stringify(payload));
-}
-
-async function load_etag() {
-    const content = await fs.readFile(etagfile, 'utf-8');
-    try {
-        const parsed = JSON.parse(content);
-        loaded_timestamp = parsed.timestamp;
-        return [parsed.etag, parsed.timestamp];
-    } catch {
-        return content;
     }
 }
 
@@ -95,40 +78,34 @@ async function fetcher() {
         fetcher_running = true;
         
         try {
-            
             const response = await axios.head(axios_url, {timeout: axios_timeout});
 
-            if (response.status === 200) {
+            if (response.status === 200 && response.headers['etag']) {
+                const current_etag = response.headers['etag'].replace(/^"|"$/g, '');
+                
+                if (latest_etag !== current_etag) {
+                    latest_etag = current_etag;
+                    loaded_timestamp = Date.now();
 
-                if (response.headers['etag']) {
-                    latest_etag = response.headers['etag'].replace(/^"|"$/g, '');
-                    
-                    try {
-                        const old_etag = await load_etag();
-                        if (old_etag[0] !== latest_etag) {
-                            await console.log(`[FETCHER]: ETag CHANGED: ${latest_etag}`);
-                            await save_etag(latest_etag, Date.now());
-                            loaded_timestamp = Date.now();
-                            await notify(latest_etag, true);
-                        }
-                    } catch (err) {
-                        if (err.code === 'ENOENT') {
-                            await console.log('[FETCHER]: Creating first ETag file');
-                            await save_etag(latest_etag, Date.now());
-                            loaded_timestamp = Date.now();
-                            await notify(latest_etag, true);
-                        }
+                    if (!is_first_fetch) {
+                        console.log(`[FETCHER]: ETag CHANGED: ${latest_etag}`);
+                        await notify(latest_etag, true);
+                    } else {
+                        console.log(`[FETCHER]: Initial ETag set: ${latest_etag} (no email sent)`);
+                        is_first_fetch = false;
                     }
                 }
             }
         } catch (error) {
             if (error.code === 'ECONNREFUSED') {
-                await console.error(`[FETCHER]: Connection refused - server down`);
+                console.error(`[FETCHER]: Connection refused - server down`);
             } else if (error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE') {
-                await console.error(`[FETCHER]: SSL certificate error`);
+                console.error(`[FETCHER]: SSL certificate error`);
             } else if (error.response && error.response.status >= 400) {
-                await console.error(`[FETCHER]: HTTP error: ${error.response.status}`);
-            } else throw error;
+                console.error(`[FETCHER]: HTTP error: ${error.response.status}`);
+            } else {
+                throw error;
+            }
         }
 
         fetcher_running = false;
@@ -138,13 +115,13 @@ async function fetcher() {
 
 async function fetcher_daemon() {
     try {
-        await console.log('[FETCHER DAEMON]: Running');
+        console.log('[FETCHER DAEMON]: Running');
         await fetcher();
     } catch (error) {
         fetcher_running = false;
-        await console.error(`[FETCHER DAEMON]: Fetcher crashed due to: ${error.message}`);
+        console.error(`[FETCHER DAEMON]: Fetcher crashed due to: ${error.message}`);
         await notify('', false);
-        await console.error(`[FETCHER DAEMON]: Restarting fetcher...`)
+        console.error(`[FETCHER DAEMON]: Restarting fetcher...`);
         setTimeout(fetcher_daemon, fetcher_daemon_timeout);
     }
 }
@@ -216,8 +193,6 @@ server.listen(PORT, () => {
     console.log('');
 });
 
-// terminate handler
-
 function shutdown() {
     console.log('[SHUTDOWN]: Closing HTTP server...');
     server.close(() => {
@@ -231,15 +206,8 @@ function shutdown() {
     }, 5000);
 }
 
-process.on('SIGINT', () => {
-    console.warn('Server interrupted by user from keyboard');
-    shutdown();
-});
-
-process.on('SIGTERM', () => {
-    console.warn('Server terminated by SIGTERM');
-    shutdown();
-});
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 process.on('uncaughtException', (err) => {
     console.error(`Uncaught exception: ${err.message}`);
