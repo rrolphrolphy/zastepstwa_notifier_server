@@ -53,7 +53,7 @@ async function notify(etag, changed = true) {
         `Błąd serwera powiadamiania o zastępstwach`;
     
     const message = changed ?
-        `ETag: ${etag}\nTimestamp: ${new Date(loaded_timestamp).toISOString()}` : ``;
+        `ETag: ${etag}\nTimestamp: ${new Date(loaded_timestamp).toISOString()}` : `Error`;
 
     try {
         const transporter = await create_transporter();
